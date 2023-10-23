@@ -145,6 +145,9 @@ def _disallowed_function_ids():
     return {id(x) for x in remove}
 
 
+# We are in progress of refactoring and moving the following functions to test_trace_rules.py.
+# If you made any change to the following functions, please also update there as well.
+# If you are not clear of how to update, please contact @yanboliang.
 @make_function_id_set
 def _allowed_function_ids():
     """
