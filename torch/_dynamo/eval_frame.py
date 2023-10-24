@@ -4,6 +4,7 @@ import contextlib
 import dis
 import functools
 import inspect
+import itertools
 import logging
 import os
 import sys
@@ -381,13 +382,25 @@ class _TorchDynamoContext:
                 not isinstance(self, DisableContext)
                 and torch.fx._symbolic_trace.is_fx_tracing()
             ):
-                if config.error_on_nested_fx_trace:
-                    raise RuntimeError(
-                        "Detected that you are using FX to symbolically trace "
-                        "a dynamo-optimized function. This is not supported at the moment."
+
+                def _is_symbolic_tracing():
+                    return any(
+                        isinstance(arg, torch.fx.Proxy)
+                        for arg in itertools.chain(args, kwargs.values())
                     )
-                else:
-                    return fn(*args, **kwargs)
+
+                # We support make_fx tracing "eager" dynamo compiled regions such as torch.cond.
+                if (
+                    _is_symbolic_tracing()
+                    or innermost_fn(self.callback).compiler_name != "eager"
+                ):
+                    if config.error_on_nested_fx_trace:
+                        raise RuntimeError(
+                            "Detected that you are using FX to symbolically trace "
+                            "a dynamo-optimized function. This is not supported at the moment."
+                        )
+                    else:
+                        return fn(*args, **kwargs)
 
             if torch.jit.is_tracing():
                 if config.error_on_nested_jit_trace:
