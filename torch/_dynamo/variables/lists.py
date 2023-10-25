@@ -12,7 +12,7 @@ from torch._subclasses.fake_tensor import is_fake
 from .. import polyfill, variables
 from ..bytecode_transformation import create_call_function, create_instruction
 from ..exc import unimplemented
-from ..guards import make_dupe_guard
+from ..guards import install_guard, make_dupe_guard
 from ..source import GetItemSource
 from ..utils import (
     get_fake_value,
@@ -95,16 +95,11 @@ class BaseListVariable(VariableTracker):
         self,
         items: List[VariableTracker],
         recursively_contains=None,
-        regen_guards=True,
         **kwargs,
     ):
         super().__init__(recursively_contains=recursively_contains, **kwargs)
         assert isinstance(items, list)
         assert all(isinstance(x, VariableTracker) for x in items)
-        # Sometimes, we know that we have passed in the guards from the items in the list
-        if regen_guards:
-            self.guards.update(VariableTracker.propagate(items)["guards"])
-
         self.items: List[VariableTracker] = items
 
     def _as_proxy(self):
@@ -297,7 +292,6 @@ class CommonListMethodsVariable(BaseListVariable):
                 type(self)(
                     self.items + [arg],
                     recursively_contains=new_rec_contains,
-                    regen_guards=False,
                     **options,
                 ),
             )
@@ -314,7 +308,6 @@ class CommonListMethodsVariable(BaseListVariable):
                 self,
                 type(self)(
                     list(self.items) + list(arg.unpack_var_sequence(tx)),
-                    regen_guards=False,
                     **options,
                 ),
             )
@@ -325,7 +318,7 @@ class CommonListMethodsVariable(BaseListVariable):
             items.insert(idx.as_python_constant(), value)
             return tx.replace_all(
                 self,
-                type(self)(items, regen_guards=False, **options),
+                type(self)(items, **options),
             )
         elif name == "pop" and self.mutable_local:
             assert not kwargs
@@ -333,14 +326,14 @@ class CommonListMethodsVariable(BaseListVariable):
             result = items.pop(*[a.as_python_constant() for a in args])
             tx.replace_all(
                 self,
-                type(self)(items, regen_guards=False, **options),
+                type(self)(items, **options),
             )
             return result
         elif name == "clear" and self.mutable_local:
             assert not kwargs and not args
             return tx.replace_all(
                 self,
-                type(self)([], regen_guards=False, **options),
+                type(self)([], **options),
             )
         elif (
             name == "__setitem__"
@@ -355,16 +348,14 @@ class CommonListMethodsVariable(BaseListVariable):
                 items[key.as_python_constant()] = list(value.items)
             else:
                 items[key.as_python_constant()] = value
-            result = ListVariable(items, regen_guards=False, **options)
+            result = ListVariable(items, **options)
             return tx.replace_all(self, result)
         elif name == "copy":
             # List copy() doesn't have args and kwargs
             assert not kwargs
             assert not args
             items = list(self.items)
-            return type(self)(
-                items, regen_guards=False, mutable_local=MutableLocal(), **options
-            )
+            return type(self)(items, mutable_local=MutableLocal(), **options)
         else:
             return super().call_method(tx, name, args, kwargs)
 
@@ -402,7 +393,7 @@ class ListVariable(CommonListMethodsVariable):
                 items[key.as_python_constant()] = value.unpack_var_sequence(tx)
             else:
                 items[key.as_python_constant()] = value
-            result = ListVariable(items, regen_guards=False, **options)
+            result = ListVariable(items, **options)
             return tx.replace_all(self, result)
         else:
             return super().call_method(tx, name, args, kwargs)
@@ -447,7 +438,7 @@ class DequeVariable(CommonListMethodsVariable):
             )
             items = list(self.items)
             items[key.as_python_constant()] = value
-            result = DequeVariable(items, regen_guards=False, **options)
+            result = DequeVariable(items, **options)
             return tx.replace_all(self, result)
         elif name == "extendleft" and self.mutable_local:
             assert not kwargs
@@ -456,7 +447,6 @@ class DequeVariable(CommonListMethodsVariable):
                 self,
                 DequeVariable(
                     list(arg.unpack_var_sequence(tx)) + list(self.items),
-                    regen_guards=False,
                     **options,
                 ),
             )
@@ -467,7 +457,7 @@ class DequeVariable(CommonListMethodsVariable):
             result = items.popleft()
             tx.replace_all(
                 self,
-                DequeVariable(list(items), regen_guards=False, **options),
+                DequeVariable(list(items), **options),
             )
             return result
         elif name == "appendleft" and self.mutable_local:
@@ -476,7 +466,6 @@ class DequeVariable(CommonListMethodsVariable):
                 self,
                 DequeVariable(
                     [args[0]] + list(self.items),
-                    regen_guards=False,
                     **options,
                 ),
             )
@@ -788,20 +777,14 @@ class SetVariable(VariableTracker):
         self,
         items: List[VariableTracker],
         recursively_contains=None,
-        regen_guards=True,
         **kwargs,
     ):
         super().__init__(recursively_contains=recursively_contains, **kwargs)
         # Note - Set is still backed by a list, because we want set behavior over the contents,
         assert isinstance(items, list)
         assert all(isinstance(x, VariableTracker) for x in items)
-
         self.items = []
         self._add(items)
-
-        # Sometimes, we know that we have passed in the guards from the items in the set
-        if regen_guards:
-            self.guards.update(VariableTracker.propagate(items)["guards"])
 
     def as_proxy(self):
         return [x.as_proxy() for x in self.items]
@@ -868,9 +851,7 @@ class SetVariable(VariableTracker):
                             e.vt.source, set_element.vt.source
                         )
                         if alias_guard:
-                            e.vt = e.vt.add_guards(
-                                {e.vt.source.make_guard(alias_guard)}
-                            )
+                            install_guard(e.vt.source.make_guard(alias_guard))
 
         return self.items
 
@@ -891,7 +872,6 @@ class SetVariable(VariableTracker):
             result = SetVariable(
                 self._add(item),
                 mutable_local=self.mutable_local,
-                regen_guards=False,
                 **options,
             )
             tx.replace_all(self, result)
@@ -903,7 +883,7 @@ class SetVariable(VariableTracker):
             result = items.pop()
             tx.replace_all(
                 self,
-                SetVariable(items, regen_guards=False, **options),
+                SetVariable(items, **options),
             )
             return result
         elif name == "__len__":
