@@ -3,10 +3,10 @@ import os
 import subprocess
 from pathlib import Path
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from tools.stats.import_test_stats import get_disabled_tests, get_slow_tests
-from tools.testing.execute_test import ExecuteTest, ShardedTest
+from tools.testing.test_run import ShardedTest, TestRun
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -61,11 +61,51 @@ class ShardJob:
 
 
 def get_with_pytest_shard(
-    tests: Sequence[ExecuteTest], test_file_times: Dict[str, float]
+    tests: Sequence[TestRun],
+    test_file_times: Dict[str, float],
+    test_class_times: Optional[Dict[str, Dict[str, float]]],
 ) -> List[ShardedTest]:
     sharded_tests: List[ShardedTest] = []
+
+    def get_duration_for_classes(
+        test_file: str, test_classes: Set[str]
+    ) -> Optional[float]:
+        duration: float = 0
+        if not test_class_times:
+            return None
+
+        for test_class in test_classes:
+            class_duration = test_class_times.get(test_file, {}).get(test_class, None)
+            if class_duration is None:
+                return None
+            if class_duration:
+                duration += class_duration
+        return duration
+
     for test in tests:
-        duration = test_file_times.get(test.test_file, None)
+        file_duration = test_file_times.get(test.test_file, None)
+        included = test.included()
+        excluded = test.excluded()
+        included_classes_duration = get_duration_for_classes(test.test_file, included)
+        excluded_classes_duration = get_duration_for_classes(test.test_file, excluded)
+
+        if included:
+            # If we don't have the time for all included classes, our upper bound is the file duration
+            duration = (
+                included_classes_duration
+                if included_classes_duration is not None
+                else file_duration
+            )
+        elif excluded:
+            # If we don't have the time for all excluded classes, our upper bound is file duration
+            duration = (
+                file_duration - excluded_classes_duration
+                if excluded_classes_duration is not None and file_duration is not None
+                else file_duration
+            )
+        else:
+            duration = file_duration
+
         if duration and duration > THRESHOLD:
             num_shards = math.ceil(duration / THRESHOLD)
             for i in range(num_shards):
@@ -79,21 +119,27 @@ def get_with_pytest_shard(
 
 def calculate_shards(
     num_shards: int,
-    tests: Sequence[ExecuteTest],
+    tests: Sequence[TestRun],
     test_file_times: Dict[str, float],
+    test_class_times: Optional[Dict[str, Dict[str, float]]],
     must_serial: Optional[Callable[[str], bool]] = None,
     sort_by_time: bool = True,
 ) -> List[Tuple[float, List[ShardedTest]]]:
     must_serial = must_serial or (lambda x: True)
 
-    known_tests: Sequence[ExecuteTest] = tests
-    unknown_tests: Sequence[ExecuteTest] = []
+    known_tests: Sequence[TestRun] = tests
+    unknown_tests: Sequence[TestRun] = []
 
     if sort_by_time:
-        known_tests = [x for x in tests if x.test_file in test_file_times]
+        known_tests = [
+            x
+            for x in tests
+            if x.test_file in test_file_times
+            or (test_class_times and x.test_file in test_class_times)
+        ]
         unknown_tests = [x for x in tests if x not in known_tests]
 
-    known_tests = get_with_pytest_shard(known_tests, test_file_times)
+    known_tests = get_with_pytest_shard(known_tests, test_file_times, test_class_times)
 
     if sort_by_time:
         known_tests = sorted(known_tests, key=lambda j: j.get_time(), reverse=True)

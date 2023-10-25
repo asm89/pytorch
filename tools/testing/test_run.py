@@ -2,9 +2,10 @@ from functools import total_ordering
 from typing import Iterable, List, Optional, Set, Tuple, Union
 
 
-class ExecuteTest:
+class TestRun:
     """
-    ExecuteTest defines the set of tests that should be run together from a single test file.
+    TestRun defines the set of tests that should be run together in a single pytest invocation.
+    It'll either be a whole test file or a subset of a test file.
     """
 
     test_file: str
@@ -38,146 +39,20 @@ class ExecuteTest:
         if included:
             self._included = set(included)
 
-    def __bool__(self) -> bool:
-        return not self.is_empty()
-
     @staticmethod
-    def empty() -> "ExecuteTest":
-        return ExecuteTest("")
+    def empty() -> "TestRun":
+        return TestRun("")
 
     def is_empty(self) -> bool:
         # Lack of a test_file means that this is an empty run,
         # which means there is nothing to run. It's the zero.
         return not self.test_file
 
-    def __repr__(self) -> str:
-        r: str = f"RunTest({self.test_file}"
-        r += f", included: {self._included}" if self._included else ""
-        r += f", excluded: {self._excluded}" if self._excluded else ""
-        r += ")"
-        return r
+    def included(self) -> Set[str]:
+        return self._included.copy()
 
-    def __str__(self) -> str:
-        if self.is_empty():
-            return "Empty"
-
-        pytest_filter = self.get_pytest_filter()
-        if pytest_filter:
-            return self.test_file + ", " + pytest_filter
-        return self.test_file
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, ExecuteTest):
-            return False
-
-        ret = self.test_file == other.test_file
-        ret = ret and self._included == other._included
-        ret = ret and self._excluded == other._excluded
-        return ret
-
-    def _is_full_file(self) -> bool:
-        return not self._included and not self._excluded
-
-    def __or__(self, other: "ExecuteTest") -> "ExecuteTest":
-        """
-        To OR/Union test runs means to run all the tests that either of the two runs specify.
-        """
-
-        # Is any file empty?
-        if self.is_empty():
-            return other
-        if other.is_empty():
-            return self
-
-        # If not, ensure we have the same file
-        assert (
-            self.test_file == other.test_file
-        ), f"Can't exclude {other} from {self} because they're not the same test file"
-
-        # 4 possible cases:
-
-        # 1. Either file is the full file, so union is everything
-        if self._is_full_file() or other._is_full_file():
-            # The union is the whole file
-            return ExecuteTest(self.test_file)
-
-        # 2. Both files only run what's in _included, so union is the union of the two sets
-        if self._included and other._included:
-            return ExecuteTest(
-                self.test_file, included=self._included.union(other._included)
-            )
-
-        # 3. Both files only exclude what's in _excluded, so union is the intersection of the two sets
-        if self._excluded and other._excluded:
-            return ExecuteTest(
-                self.test_file, excluded=self._excluded.intersection(other._excluded)
-            )
-
-        # 4. One file includes and the other excludes, so we then continue excluding the _excluded set minus
-        #    whatever is in the _included set
-        included = self._included | other._included
-        excluded = self._excluded | other._excluded
-        return ExecuteTest(self.test_file, excluded=excluded - included)
-
-    def __ior__(  # noqa: PYI034 Method returns `self`
-        self, other: "ExecuteTest"
-    ) -> "ExecuteTest":
-        res = self | other
-        self.test_file = res.test_file
-        self._included = res._included
-        self._excluded = res._excluded
-
-        return self
-
-    def __sub__(self, other: "ExecuteTest") -> "ExecuteTest":
-        """
-        To subtract test runs means to run all the tests in the first run except for what the second run specifies.
-
-        It is currently an error if the subtraction will result in no tests being run.
-        """
-
-        # Is any file empty?
-        if self.is_empty():
-            return ExecuteTest.empty()
-        if other.is_empty():
-            return self
-
-        assert (
-            self.test_file == other.test_file
-        ), f"Can't exclude {other} from {self} because they're not the same test file"
-
-        if other._is_full_file():
-            return ExecuteTest.empty()
-
-        def return_inclusions_or_empty(inclusions: Set[str]) -> ExecuteTest:
-            if inclusions:
-                return ExecuteTest(self.test_file, included=inclusions)
-            return ExecuteTest.empty()
-
-        if other._included:
-            if self._included:
-                return return_inclusions_or_empty(self._included - other._included)
-            else:
-                return ExecuteTest(
-                    self.test_file, excluded=self._excluded | other._included
-                )
-        else:
-            if self._included:
-                return return_inclusions_or_empty(self._included & other._excluded)
-            else:
-                return return_inclusions_or_empty(other._excluded - self._excluded)
-
-    def __isub__(  # noqa: PYI034 Method returns `self`
-        self, other: "ExecuteTest"
-    ) -> "ExecuteTest":
-        res = self - other
-        self.test_file = res.test_file
-        self._included = res._included
-        self._excluded = res._excluded
-        return self
-
-    def __and__(self, other: "ExecuteTest") -> "ExecuteTest":
-        return (self | other) - (self - other) - (other - self)
+    def excluded(self) -> Set[str]:
+        return self._excluded.copy()
 
     def get_pytest_filter(self) -> str:
         if self._included:
@@ -187,7 +62,7 @@ class ExecuteTest:
         else:
             return ""
 
-    def contains(self, test: "ExecuteTest") -> bool:
+    def contains(self, test: "TestRun") -> bool:
         if self.test_file != test.test_file:
             return False
 
@@ -209,26 +84,158 @@ class ExecuteTest:
         # Does self exclude anything test includes? If not, we're good
         return not self._excluded.intersection(test._included)
 
+    def __bool__(self) -> bool:
+        return not self.is_empty()
 
-TestRuns = Tuple[ExecuteTest, ...]
+    def __repr__(self) -> str:
+        r: str = f"RunTest({self.test_file}"
+        r += f", included: {self._included}" if self._included else ""
+        r += f", excluded: {self._excluded}" if self._excluded else ""
+        r += ")"
+        return r
+
+    def __str__(self) -> str:
+        if self.is_empty():
+            return "Empty"
+
+        pytest_filter = self.get_pytest_filter()
+        if pytest_filter:
+            return self.test_file + ", " + pytest_filter
+        return self.test_file
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TestRun):
+            return False
+
+        ret = self.test_file == other.test_file
+        ret = ret and self._included == other._included
+        ret = ret and self._excluded == other._excluded
+        return ret
+
+    def is_full_file(self) -> bool:
+        return not self._included and not self._excluded
+
+    def __ior__(  # noqa: PYI034 Method returns `self`
+        self, other: "TestRun"
+    ) -> "TestRun":
+        res = self | other
+        self.test_file = res.test_file
+        self._included = res._included
+        self._excluded = res._excluded
+
+        return self
+
+    def __or__(self, other: "TestRun") -> "TestRun":
+        """
+        To OR/Union test runs means to run all the tests that either of the two runs specify.
+        """
+
+        # Is any file empty?
+        if self.is_empty():
+            return other
+        if other.is_empty():
+            return self
+
+        # If not, ensure we have the same file
+        assert (
+            self.test_file == other.test_file
+        ), f"Can't exclude {other} from {self} because they're not the same test file"
+
+        # 4 possible cases:
+
+        # 1. Either file is the full file, so union is everything
+        if self.is_full_file() or other.is_full_file():
+            # The union is the whole file
+            return TestRun(self.test_file)
+
+        # 2. Both files only run what's in _included, so union is the union of the two sets
+        if self._included and other._included:
+            return TestRun(
+                self.test_file, included=self._included.union(other._included)
+            )
+
+        # 3. Both files only exclude what's in _excluded, so union is the intersection of the two sets
+        if self._excluded and other._excluded:
+            return TestRun(
+                self.test_file, excluded=self._excluded.intersection(other._excluded)
+            )
+
+        # 4. One file includes and the other excludes, so we then continue excluding the _excluded set minus
+        #    whatever is in the _included set
+        included = self._included | other._included
+        excluded = self._excluded | other._excluded
+        return TestRun(self.test_file, excluded=excluded - included)
+
+    def __isub__(  # noqa: PYI034 Method returns `self`
+        self, other: "TestRun"
+    ) -> "TestRun":
+        res = self - other
+        self.test_file = res.test_file
+        self._included = res._included
+        self._excluded = res._excluded
+        return self
+
+    def __sub__(self, other: "TestRun") -> "TestRun":
+        """
+        To subtract test runs means to run all the tests in the first run except for what the second run specifies.
+
+        It is currently an error if the subtraction will result in no tests being run.
+        """
+
+        # Is any file empty?
+        if self.is_empty():
+            return TestRun.empty()
+        if other.is_empty():
+            return self
+
+        assert (
+            self.test_file == other.test_file
+        ), f"Can't exclude {other} from {self} because they're not the same test file"
+
+        if other.is_full_file():
+            return TestRun.empty()
+
+        def return_inclusions_or_empty(inclusions: Set[str]) -> TestRun:
+            if inclusions:
+                return TestRun(self.test_file, included=inclusions)
+            return TestRun.empty()
+
+        if other._included:
+            if self._included:
+                return return_inclusions_or_empty(self._included - other._included)
+            else:
+                return TestRun(
+                    self.test_file, excluded=self._excluded | other._included
+                )
+        else:
+            if self._included:
+                return return_inclusions_or_empty(self._included & other._excluded)
+            else:
+                return return_inclusions_or_empty(other._excluded - self._excluded)
+
+    def __and__(self, other: "TestRun") -> "TestRun":
+        return (self | other) - (self - other) - (other - self)
+
+
+TestRuns = Tuple[TestRun, ...]
 
 
 @total_ordering
 class ShardedTest:
-    test: ExecuteTest
+    test: TestRun
     shard: int
     num_shards: int
     time: Optional[float]  # In seconds
 
     def __init__(
         self,
-        test: Union[ExecuteTest, str],
+        test: Union[TestRun, str],
         shard: int,
         num_shards: int,
         time: Optional[float] = None,
     ) -> None:
         if isinstance(test, str):
-            test = ExecuteTest(test)
+            test = TestRun(test)
         self.test = test
         self.shard = shard
         self.num_shards = num_shards

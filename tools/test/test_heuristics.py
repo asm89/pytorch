@@ -11,15 +11,16 @@ try:
     # using tools/ to optimize test run.
     sys.path.append(str(REPO_ROOT))
 
-    from tools.testing.execute_test import ExecuteTest, TestRuns
     from tools.testing.target_determination.determinator import (
         AggregatedHeuristics,
         get_test_prioritizations,
         TestPrioritizations,
     )
+    from tools.testing.target_determination.heuristics import HEURISTICS
     from tools.testing.target_determination.heuristics.previously_failed_in_pr import (
         _get_previously_failing_tests,
     )
+    from tools.testing.test_run import TestRun, TestRuns
 
 except ModuleNotFoundError:
     print("Can't import required modules, exiting")
@@ -144,13 +145,13 @@ class TestInterface(HeuristicsTestMixin):
         )
 
         expected_probable_tests = tuple(
-            ExecuteTest(test) for test in ["test2::TestFooClass", "test3"]
+            TestRun(test) for test in ["test2::TestFooClass", "test3"]
         )
         expected_unranked_tests = (
-            ExecuteTest("test1"),
-            ExecuteTest("test2", excluded=["TestFooClass"]),
-            ExecuteTest("test4"),
-            ExecuteTest("test5"),
+            TestRun("test1"),
+            TestRun("test2", excluded=["TestFooClass"]),
+            TestRun("test4"),
+            TestRun("test5"),
         )
 
         self.assert_heuristics_match(
@@ -179,18 +180,18 @@ class TestAggregatedHeuristics(HeuristicsTestMixin):
         )
 
         expected_high_relevance = tuple(
-            ExecuteTest(test) for test in ["test2::TestFooClass", "test3::TestBarClass"]
+            TestRun(test) for test in ["test2::TestFooClass", "test3::TestBarClass"]
         )
-        expected_probable_relevance = (ExecuteTest("test3", excluded=["TestBarClass"]),)
+        expected_probable_relevance = (TestRun("test3", excluded=["TestBarClass"]),)
         expected_unranked_relevance = (
-            ExecuteTest("test1"),
-            ExecuteTest("test2", excluded=["TestFooClass"]),
-            ExecuteTest("test4"),
+            TestRun("test1"),
+            TestRun("test2", excluded=["TestFooClass"]),
+            TestRun("test4"),
         )
 
         aggregator = AggregatedHeuristics(unranked_tests=tests)
-        aggregator.add_heuristic_results("heuristic1", heuristic1)
-        aggregator.add_heuristic_results("heuristic2", heuristic2)
+        aggregator.add_heuristic_results(HEURISTICS[0], heuristic1)
+        aggregator.add_heuristic_results(HEURISTICS[1], heuristic2)
 
         print("-------------------")
         print("Aggregated Heuristics")
@@ -215,21 +216,21 @@ class TestAggregatedHeuristics(HeuristicsTestMixin):
         )
 
         expected_aggregated_high_relevance = tuple(
-            ExecuteTest(test) for test in ["test2::TestFooClass"]
+            TestRun(test) for test in ["test2::TestFooClass"]
         )
         expected_aggregated_probable_relevance = (
-            ExecuteTest("test2", excluded=["TestFooClass"]),
-            ExecuteTest("test3"),
+            TestRun("test2", excluded=["TestFooClass"]),
+            TestRun("test3"),
         )
         expected_aggregated_unranked_relevance = (
-            ExecuteTest("test1"),
-            ExecuteTest("test4"),
-            ExecuteTest("test5"),
+            TestRun("test1"),
+            TestRun("test4"),
+            TestRun("test5"),
         )
 
         aggregator = AggregatedHeuristics(unranked_tests=tests)
-        aggregator.add_heuristic_results("heuristic1", heuristic1)
-        aggregator.add_heuristic_results("heuristic2", heuristic2)
+        aggregator.add_heuristic_results(HEURISTICS[0], heuristic1)
+        aggregator.add_heuristic_results(HEURISTICS[1], heuristic2)
 
         aggregated_pris = aggregator.get_aggregated_priorities()
 

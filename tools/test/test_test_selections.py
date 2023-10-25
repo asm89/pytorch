@@ -9,26 +9,30 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 try:
     # using tools/ to optimize test run.
     sys.path.append(str(REPO_ROOT))
-    from tools.testing.execute_test import ExecuteTest, ShardedTest
+    from tools.testing.test_run import ShardedTest, TestRun
     from tools.testing.test_selections import calculate_shards, THRESHOLD
 except ModuleNotFoundError:
     print("Can't import required modules, exiting")
     sys.exit(1)
 
 
+def gen_class_times(test_times: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+    return {k: {"class1": v} for k, v in test_times.items()}
+
+
 class TestCalculateShards(unittest.TestCase):
-    tests: List[ExecuteTest] = [
-        ExecuteTest("super_long_test"),
-        ExecuteTest("long_test1"),
-        ExecuteTest("long_test2"),
-        ExecuteTest("normal_test1"),
-        ExecuteTest("normal_test2"),
-        ExecuteTest("normal_test3"),
-        ExecuteTest("short_test1"),
-        ExecuteTest("short_test2"),
-        ExecuteTest("short_test3"),
-        ExecuteTest("short_test4"),
-        ExecuteTest("short_test5"),
+    tests: List[TestRun] = [
+        TestRun("super_long_test"),
+        TestRun("long_test1"),
+        TestRun("long_test2"),
+        TestRun("normal_test1"),
+        TestRun("normal_test2"),
+        TestRun("normal_test3"),
+        TestRun("short_test1"),
+        TestRun("short_test2"),
+        TestRun("short_test3"),
+        TestRun("short_test4"),
+        TestRun("short_test5"),
     ]
 
     test_times: Dict[str, float] = {
@@ -43,6 +47,20 @@ class TestCalculateShards(unittest.TestCase):
         "short_test3": 0.4,
         "short_test4": 0.3,
         "short_test5": 0.01,
+    }
+
+    test_class_times: Dict[str, Dict[str, float]] = {
+        "super_long_test": {"class1": 55},
+        "long_test1": {"class1": 1, "class2": 21},
+        "long_test2": {"class1": 10, "class2": 8},
+        "normal_test1": {"class1": 9},
+        "normal_test2": {"class1": 7},
+        "normal_test3": {"class1": 5},
+        "short_test1": {"class1": 1},
+        "short_test2": {"class1": 0.6},
+        "short_test3": {"class1": 0.4},
+        "short_test4": {"class1": 0.3},
+        "short_test5": {"class1": 0.01},
     }
 
     def assert_shards_equal(
@@ -79,21 +97,30 @@ class TestCalculateShards(unittest.TestCase):
             ),
         ]
         self.assert_shards_equal(
-            expected_shards, calculate_shards(2, self.tests, self.test_times)
+            expected_shards,
+            calculate_shards(2, self.tests, self.test_times, self.test_class_times),
         )
 
     def test_calculate_1_shard_with_complete_test_times(self) -> None:
+        tests = self.tests.copy()
+        class_test1 = TestRun("long_test1", excluded=["class2"])
+        class_test2 = TestRun("long_test1", included=["class2"])
+        tests.append(class_test1)
+        tests.append(class_test2)
+
         expected_shards = [
             (
-                118.31,
+                140.31,
                 [
                     ShardedTest(test="super_long_test", shard=1, num_shards=1, time=55),
                     ShardedTest(test="long_test1", shard=1, num_shards=1, time=22),
+                    ShardedTest(class_test2, shard=1, num_shards=1, time=21),
                     ShardedTest(test="long_test2", shard=1, num_shards=1, time=18),
                     ShardedTest(test="normal_test1", shard=1, num_shards=1, time=9),
                     ShardedTest(test="normal_test2", shard=1, num_shards=1, time=7),
                     ShardedTest(test="normal_test3", shard=1, num_shards=1, time=5),
                     ShardedTest(test="short_test1", shard=1, num_shards=1, time=1),
+                    ShardedTest(class_test1, shard=1, num_shards=1, time=1),
                     ShardedTest(test="short_test2", shard=1, num_shards=1, time=0.6),
                     ShardedTest(test="short_test3", shard=1, num_shards=1, time=0.4),
                     ShardedTest(test="short_test4", shard=1, num_shards=1, time=0.3),
@@ -102,7 +129,8 @@ class TestCalculateShards(unittest.TestCase):
             )
         ]
         self.assert_shards_equal(
-            expected_shards, calculate_shards(1, self.tests, self.test_times)
+            expected_shards,
+            calculate_shards(1, tests, self.test_times, self.test_class_times),
         )
 
     def test_calculate_5_shards_with_complete_test_times(self) -> None:
@@ -133,7 +161,8 @@ class TestCalculateShards(unittest.TestCase):
             ),
         ]
         self.assert_shards_equal(
-            expected_shards, calculate_shards(5, self.tests, self.test_times)
+            expected_shards,
+            calculate_shards(5, self.tests, self.test_times, self.test_class_times),
         )
 
     def test_calculate_2_shards_with_incomplete_test_times(self) -> None:
@@ -166,7 +195,13 @@ class TestCalculateShards(unittest.TestCase):
             ),
         ]
         self.assert_shards_equal(
-            expected_shards, calculate_shards(2, self.tests, incomplete_test_times)
+            expected_shards,
+            calculate_shards(
+                2,
+                self.tests,
+                incomplete_test_times,
+                gen_class_times(incomplete_test_times),
+            ),
         )
 
     def test_calculate_5_shards_with_incomplete_test_times(self) -> None:
@@ -214,7 +249,13 @@ class TestCalculateShards(unittest.TestCase):
             ),
         ]
         self.assert_shards_equal(
-            expected_shards, calculate_shards(5, self.tests, incomplete_test_times)
+            expected_shards,
+            calculate_shards(
+                5,
+                self.tests,
+                incomplete_test_times,
+                gen_class_times(incomplete_test_times),
+            ),
         )
 
     def test_split_shards(self) -> None:
@@ -226,7 +267,10 @@ class TestCalculateShards(unittest.TestCase):
         self.assert_shards_equal(
             expected_shards,
             calculate_shards(
-                2, [ExecuteTest(t) for t in test_times.keys()], test_times
+                2,
+                [TestRun(t) for t in test_times.keys()],
+                test_times,
+                gen_class_times(test_times),
             ),
         )
 
@@ -253,7 +297,10 @@ class TestCalculateShards(unittest.TestCase):
         self.assert_shards_equal(
             expected_shards,
             calculate_shards(
-                2, [ExecuteTest(t) for t in test_times.keys()], test_times
+                2,
+                [TestRun(t) for t in test_times.keys()],
+                test_times,
+                gen_class_times(test_times),
             ),
         )
 
@@ -268,7 +315,10 @@ class TestCalculateShards(unittest.TestCase):
         self.assert_shards_equal(
             expected_shards,
             calculate_shards(
-                2, [ExecuteTest(t) for t in test_times.keys()], test_times
+                2,
+                [TestRun(t) for t in test_times.keys()],
+                test_times,
+                gen_class_times(test_times),
             ),
         )
 
@@ -282,7 +332,10 @@ class TestCalculateShards(unittest.TestCase):
             }
 
             shards = calculate_shards(
-                num_shards, [ExecuteTest(t) for t in random_times.keys()], random_times
+                num_shards,
+                [TestRun(t) for t in random_times.keys()],
+                random_times,
+                gen_class_times(random_times),
             )
 
             times = [x[0] for x in shards]
@@ -325,7 +378,9 @@ class TestCalculateShards(unittest.TestCase):
             #     (sum_of_rest, ['super_long_test', 'long_test1']),
             #     (sum_of_rest, [i for i in self.tests if i != 'super_long_test' and i != 'long_test1']),
             # ]
-            calculated_shards = calculate_shards(2, self.tests, random_times)
+            calculated_shards = calculate_shards(
+                2, self.tests, random_times, gen_class_times(random_times)
+            )
             max_shard_time = max(calculated_shards[0][0], calculated_shards[1][0])
             if sum_of_rest != 0:
                 # The calculated shard should not have a ratio worse than 7/6 for num_shards = 2

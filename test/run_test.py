@@ -40,10 +40,14 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # using tools/ to optimize test run.
 sys.path.insert(0, str(REPO_ROOT))
-from tools.stats.import_test_stats import ADDITIONAL_CI_FILES_FOLDER, TEST_TIMES_FILE
+from tools.stats.import_test_stats import (
+    ADDITIONAL_CI_FILES_FOLDER,
+    TEST_CLASS_TIMES_FILE,
+    TEST_TIMES_FILE,
+)
 from tools.stats.upload_metrics import add_global_metric, emit_metric
 
-from tools.testing.execute_test import ExecuteTest
+from tools.testing.test_run import TestRun
 from tools.testing.target_determination.determinator import (
     AggregatedHeuristics,
     get_test_prioritizations,
@@ -703,7 +707,7 @@ def _test_cpp_extensions_aot(test_directory, options, use_ninja):
 
         assert install_directory, "install_directory must not be empty"
         os.environ["PYTHONPATH"] = os.pathsep.join([install_directory, python_path])
-        return run_test(ExecuteTest(test_module), test_directory, options)
+        return run_test(TestRun(test_module), test_directory, options)
     finally:
         os.environ["PYTHONPATH"] = python_path
         if os.path.exists(test_directory + "/" + test_module + ".py"):
@@ -1421,14 +1425,14 @@ def get_selected_tests(options) -> List[str]:
     return selected_tests
 
 
-def download_test_times(
-    file: str = ADDITIONAL_CI_FILES_FOLDER / TEST_TIMES_FILE,
-) -> Dict[str, float]:
-    # Download previous test times to make sharding decisions
+def load_test_times_from_file(
+    file: str,
+) -> Dict[str, Any]:
+    # Load previous test times to make sharding decisions
     path = os.path.join(str(REPO_ROOT), file)
     if not os.path.exists(path):
         print_to_stderr(
-            "::warning:: Failed to find test times file. Using round robin sharding."
+            f"::warning:: Failed to find test times file `{path}`. Using round robin sharding."
         )
         return {}
 
@@ -1453,6 +1457,18 @@ def download_test_times(
         return test_times_file["default"]["default"]
 
 
+def load_test_file_times(
+    file: str = ADDITIONAL_CI_FILES_FOLDER / TEST_TIMES_FILE,
+) -> Dict[str, float]:
+    return cast(Dict[str, float], load_test_times_from_file(file))
+
+
+def load_test_class_times(
+    file: str = ADDITIONAL_CI_FILES_FOLDER / TEST_CLASS_TIMES_FILE,
+) -> Dict[str, Dict[str, float]]:
+    return cast(Dict[str, Dict[str, float]], load_test_times_from_file(file))
+
+
 def get_sharding_opts(options) -> Tuple[int, int]:
     which_shard, num_shards = 1, 1
     if options.shard:
@@ -1468,8 +1484,9 @@ def get_sharding_opts(options) -> Tuple[int, int]:
 
 def do_sharding(
     options,
-    selected_tests: Sequence[ExecuteTest],
+    selected_tests: Sequence[TestRun],
     test_file_times: Dict[str, float],
+    test_class_times: Dict[str, Dict[str, float]],
     sort_by_time: bool = True,
 ) -> List[ShardedTest]:
     which_shard, num_shards = get_sharding_opts(options)
@@ -1479,6 +1496,7 @@ def do_sharding(
         num_shards,
         selected_tests,
         test_file_times,
+        test_class_times=test_class_times,
         must_serial=must_serial,
         sort_by_time=sort_by_time,
     )
@@ -1668,6 +1686,9 @@ def main():
             "cpp": options.cpp,
         }
 
+    test_file_times_dict = load_test_file_times()
+    test_class_times_dict = load_test_class_times()
+
     class TestBatch:
         """Defines a set of tests with similar priority that should be run together on the current shard"""
 
@@ -1676,12 +1697,16 @@ def main():
         failures: List[TestFailure]
 
         def __init__(
-            self, name: str, raw_tests: Sequence[ExecuteTest], should_sort_shard: bool
+            self, name: str, raw_tests: Sequence[TestRun], should_sort_shard: bool
         ):
             self.name = name
             self.failures = []
             self.sharded_tests = do_sharding(
-                options, raw_tests, test_times_dict, sort_by_time=should_sort_shard
+                options,
+                raw_tests,
+                test_file_times_dict,
+                test_class_times_dict,
+                sort_by_time=should_sort_shard,
             )
 
         def __str__(self):
@@ -1696,7 +1721,6 @@ def main():
             )
             return s.strip()
 
-    test_times_dict = download_test_times(ADDITIONAL_CI_FILES_FOLDER / TEST_TIMES_FILE)
     test_batches: List[TestBatch] = []
 
     # Each batch will be run sequentially

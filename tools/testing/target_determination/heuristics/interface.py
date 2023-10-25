@@ -15,7 +15,7 @@ from typing import (
     Tuple,
 )
 
-from tools.testing.execute_test import ExecuteTest, TestRuns
+from tools.testing.test_run import TestRun, TestRuns
 
 
 # Note: Keep the implementation of Relevance private to this file so
@@ -69,7 +69,7 @@ class TestPrioritizations:
                otherwise it breaks the test sharding logic
     """
 
-    _test_priorities: List[List[ExecuteTest]]  # This list MUST be ordered by Relevance
+    _test_priorities: List[List[TestRun]]  # This list MUST be ordered by Relevance
     _original_tests: FrozenSet[str]
 
     def __init__(
@@ -86,30 +86,28 @@ class TestPrioritizations:
         self._test_priorities = [[] for _ in range(5)]
         # Setup the initial priorities
         self._test_priorities[Relevance.UNRANKED.value] = [
-            ExecuteTest(test) for test in tests_being_ranked
+            TestRun(test) for test in tests_being_ranked
         ]
 
         for test in high_relevance or []:
-            self.set_test_relevance(ExecuteTest(test), Relevance.HIGH)
+            self.set_test_relevance(TestRun(test), Relevance.HIGH)
         for test in probable_relevance or []:
-            self.set_test_relevance(ExecuteTest(test), Relevance.PROBABLE)
+            self.set_test_relevance(TestRun(test), Relevance.PROBABLE)
         for test in unranked_relevance or []:
-            self.set_test_relevance(ExecuteTest(test), Relevance.UNRANKED)
+            self.set_test_relevance(TestRun(test), Relevance.UNRANKED)
         for test in unlikely_relevance or []:
-            self.set_test_relevance(ExecuteTest(test), Relevance.UNLIKELY)
+            self.set_test_relevance(TestRun(test), Relevance.UNLIKELY)
         for test in no_relevance or []:
-            self.set_test_relevance(ExecuteTest(test), Relevance.NONE)
+            self.set_test_relevance(TestRun(test), Relevance.NONE)
 
         self.validate_test_priorities()
 
-    def _traverse_priorities(self) -> Iterator[Tuple[Relevance, List[ExecuteTest]]]:
+    def _traverse_priorities(self) -> Iterator[Tuple[Relevance, List[TestRun]]]:
         for relevance in Relevance.priority_traversal():
             yield (relevance, self._test_priorities[relevance.value])
 
-    def get_pointer_to_test(
-        self, test_run: ExecuteTest
-    ) -> Iterator[Tuple[Relevance, int]]:
-        # Find a test run that contains the given ExecuteTest and it's relevance.
+    def get_pointer_to_test(self, test_run: TestRun) -> Iterator[Tuple[Relevance, int]]:
+        # Find a test run that contains the given TestRun and it's relevance.
         found_match = False
         for relevance, tests in self._traverse_priorities():
             for idx, existing_test_run in enumerate(tests):
@@ -132,7 +130,7 @@ class TestPrioritizations:
 
     def _update_test_relevance(
         self,
-        test_run: ExecuteTest,
+        test_run: TestRun,
         new_relevance: Relevance,
         acceptable_relevance_fn: Callable[[Relevance, Relevance], bool],
     ) -> None:
@@ -141,9 +139,9 @@ class TestPrioritizations:
             return  # We don't need this test
 
         # The tests covered by test_run could potentially have been split up into
-        # multiple test executions, each at a different relevance. Let's make sure to bring
+        # multiple test runs, each at a different relevance. Let's make sure to bring
         # all of them up to the minimum relevance
-        upgraded_tests = ExecuteTest.empty()
+        upgraded_tests = TestRun.empty()
         tests_to_remove = []
         for curr_relevance, test_run_idx in self.get_pointer_to_test(test_run):
             if acceptable_relevance_fn(curr_relevance, new_relevance):
@@ -173,16 +171,12 @@ class TestPrioritizations:
             print(f"  specificaly, {upgraded_tests}")
             self._test_priorities[new_relevance.value].append(upgraded_tests)
 
-    def set_test_relevance(
-        self, test_run: ExecuteTest, new_relevance: Relevance
-    ) -> None:
+    def set_test_relevance(self, test_run: TestRun, new_relevance: Relevance) -> None:
         return self._update_test_relevance(
             test_run, new_relevance, lambda curr, new: curr == new
         )
 
-    def raise_test_relevance(
-        self, test_run: ExecuteTest, new_relevance: Relevance
-    ) -> None:
+    def raise_test_relevance(self, test_run: TestRun, new_relevance: Relevance) -> None:
         return self._update_test_relevance(
             test_run, new_relevance, lambda curr, new: curr >= new
         )
@@ -245,7 +239,7 @@ class TestPrioritizations:
         return tuple(test for test in self._test_priorities[Relevance.UNRANKED.value])
 
     def print_info(self) -> None:
-        def _print_tests(label: str, tests: List[ExecuteTest]) -> None:
+        def _print_tests(label: str, tests: List[TestRun]) -> None:
             if not tests:
                 return
 
@@ -259,7 +253,7 @@ class TestPrioritizations:
 
     def _get_test_relevance_group(self, test_name: str) -> Relevance:
         """Returns the priority of a test."""
-        query_test = ExecuteTest(test_name)
+        query_test = TestRun(test_name)
         for relevance_group, tests in self._traverse_priorities():
             if any(test.contains(query_test) for test in tests):
                 return Relevance(relevance_group)
@@ -269,7 +263,7 @@ class TestPrioritizations:
     def _get_test_order(self, test_name: str) -> int:
         """Returns the rank of the test specified by this heuristic."""
         base_rank = 0
-        query_test = ExecuteTest(test_name)
+        query_test = TestRun(test_name)
 
         for _, relevance_group_tests in self._traverse_priorities():
             for idx, test in enumerate(relevance_group_tests):
@@ -280,7 +274,7 @@ class TestPrioritizations:
         raise ValueError(f"Test {test_name} not found in any relevance group")
 
     def _get_test_order_within_relevance_group(self, test_name: str) -> int:
-        query_test = ExecuteTest(test_name)
+        query_test = TestRun(test_name)
         for _, relevance_group_tests in self._traverse_priorities():
             for idx, test in enumerate(relevance_group_tests):
                 if test.contains(query_test):
